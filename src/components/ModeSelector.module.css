@@ -1,0 +1,31 @@
+.fieldset {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.5rem 1rem;
+  margin: 0;
+}
+
+.legend {
+  padding: 0 0.4rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.option input {
+  accent-color: var(--accent);
+  cursor: pointer;
+}

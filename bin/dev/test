@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Run the test suite:
+#   - tsc --noEmit          type check
+#   - vitest --coverage     unit + component tests, 90% thresholds enforced
+#   - playwright            end-to-end tests (starts its own Vite server)
+#
+# Usage:
+#   bin/dev/test             # everything
+#   bin/dev/test --unit      # vitest only
+#   bin/dev/test --e2e       # playwright only
+#   bin/dev/test --types     # tsc only
+#   bin/dev/test --watch     # vitest in watch mode
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$PROJECT_ROOT"
+
+# Print the header comment block above, minus the shebang.
+usage() {
+    awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "${BASH_SOURCE[0]}"
+}
+
+TARGET="all"
+for arg in "$@"; do
+    case "$arg" in
+        --unit) TARGET="unit" ;;
+        --e2e) TARGET="e2e" ;;
+        --types|--typecheck) TARGET="types" ;;
+        --watch) TARGET="watch" ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "unknown option: $arg (try --help)" >&2; exit 64 ;;
+    esac
+done
+
+# The project pins Node in mise.toml; the system Node may be too old.
+NPM=(npm)
+if [ -f "$PROJECT_ROOT/mise.toml" ] && command -v mise >/dev/null 2>&1; then
+    NPM=(mise exec -- npm)
+fi
+
+if [ ! -d "$PROJECT_ROOT/node_modules" ]; then
+    echo "==> Installing dependencies…"
+    "${NPM[@]}" install
+fi
+
+run_types() {
+    echo "==> Type checking…"
+    "${NPM[@]}" run typecheck
+}
+
+run_unit() {
+    echo "==> Unit and component tests…"
+    "${NPM[@]}" run test:coverage
+}
+
+run_e2e() {
+    echo "==> End-to-end tests…"
+    # Playwright needs its browser binaries; a fresh checkout has none.
+    if ! "${NPM[@]}" exec -- playwright install chromium --dry-run >/dev/null 2>&1; then
+        echo "    Installing the Chromium build Playwright expects…"
+        "${NPM[@]}" exec -- playwright install chromium
+    fi
+    "${NPM[@]}" run test:e2e
+}
+
+case "$TARGET" in
+    types) run_types ;;
+    unit) run_unit ;;
+    e2e) run_e2e ;;
+    watch) echo "==> Watching…"; exec "${NPM[@]}" run test:watch ;;
+    all)
+        run_types
+        run_unit
+        run_e2e
+        echo "==> Done."
+        ;;
+esac

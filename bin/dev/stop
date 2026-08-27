@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# Stop everything bin/dev/start brought up:
+#   - Vite dev server (:5173)
+#   - BFF (:8787)
+#   - the Datadog agent container
+#
+# Only processes whose working directory is this project are touched, so an
+# unrelated program holding one of the ports is reported and left alone.
+#
+# Usage:
+#   bin/dev/stop             # servers and the container
+#   bin/dev/stop --servers   # leave the container running
+#   bin/dev/stop --agent     # only the container
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$PROJECT_ROOT"
+
+# Print the header comment block above, minus the shebang.
+usage() {
+    awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "${BASH_SOURCE[0]}"
+}
+
+TARGET="all"
+for arg in "$@"; do
+    case "$arg" in
+        --servers) TARGET="servers" ;;
+        --agent) TARGET="agent" ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "unknown option: $arg (try --help)" >&2; exit 64 ;;
+    esac
+done
+
+# The working directory of a pid, or empty if it cannot be read.
+cwd_of() {
+    lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1
+}
+
+# SIGTERM, then SIGKILL if it is still alive a few seconds later.
+terminate() {
+    local pid="$1" label="$2"
+    kill -TERM "$pid" 2>/dev/null || true
+    for _ in $(seq 1 20); do
+        kill -0 "$pid" 2>/dev/null || { echo "    stopped $label (pid $pid)"; return; }
+        sleep 0.25
+    done
+    kill -KILL "$pid" 2>/dev/null || true
+    echo "    killed $label (pid $pid, did not exit on SIGTERM)"
+}
+
+stop_port() {
+    local port="$1" label="$2" found="no" pid cwd
+    for pid in $(lsof -ti "tcp:$port" -sTCP:LISTEN 2>/dev/null); do
+        cwd="$(cwd_of "$pid")"
+        if [ "$cwd" = "$PROJECT_ROOT" ]; then
+            found="yes"
+            terminate "$pid" "$label"
+        else
+            found="yes"
+            echo "    :$port is held by pid $pid outside this project (${cwd:-unknown cwd}); left alone"
+        fi
+    done
+    [ "$found" = "no" ] && echo "    $label was not running"
+    return 0
+}
+
+# The supervisor that `npm run dev` uses; it exits on its own once both
+# children are gone, but clean it up if it lingers.
+stop_supervisor() {
+    local pid cwd
+    for pid in $(pgrep -f 'concurrently' 2>/dev/null || true); do
+        cwd="$(cwd_of "$pid")"
+        [ "$cwd" = "$PROJECT_ROOT" ] && terminate "$pid" "concurrently"
+    done
+    return 0
+}
+
+stop_servers() {
+    echo "==> Stopping dev servers…"
+    stop_port 5173 "Vite"
+    stop_port 8787 "BFF"
+    stop_supervisor
+}
+
+stop_agent() {
+    echo "==> Stopping the Datadog agent…"
+    if ! docker info >/dev/null 2>&1; then
+        echo "    Docker is not running; nothing to stop"
+        return 0
+    fi
+    if [ -z "$(docker compose ps -q 2>/dev/null)" ]; then
+        echo "    the agent was not running"
+        return 0
+    fi
+    docker compose down
+}
+
+case "$TARGET" in
+    servers) stop_servers ;;
+    agent) stop_agent ;;
+    all) stop_servers; stop_agent ;;
+esac
+
+echo "==> Done."

@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Start the dev servers:
+#   - Vite dev server (the React app) on :5173
+#   - BFF (telemetry -> DogStatsD) on :8787
+#
+# Usage:
+#   bin/dev/start            # both servers
+#   bin/dev/start --web      # Vite only
+#   bin/dev/start --bff      # BFF only
+#   bin/dev/start --agent    # also bring up the Datadog agent first
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$PROJECT_ROOT"
+
+# Print the header comment block above, minus the shebang.
+usage() {
+    awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "${BASH_SOURCE[0]}"
+}
+
+TARGET="all"
+WITH_AGENT="no"
+for arg in "$@"; do
+    case "$arg" in
+        --web) TARGET="web" ;;
+        --bff) TARGET="bff" ;;
+        --agent) WITH_AGENT="yes" ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "unknown option: $arg (try --help)" >&2; exit 64 ;;
+    esac
+done
+
+# The project pins Node in mise.toml; the system Node may be too old.
+NPM=(npm)
+if [ -f "$PROJECT_ROOT/mise.toml" ] && command -v mise >/dev/null 2>&1; then
+    NPM=(mise exec -- npm)
+else
+    echo "==> mise not found; using the Node on PATH ($(node --version 2>/dev/null || echo 'none'))"
+    echo "    package.json requires >=24.13.0 (install mise: brew install mise)"
+fi
+
+if [ ! -d "$PROJECT_ROOT/node_modules" ]; then
+    echo "==> Installing dependencies…"
+    "${NPM[@]}" install
+fi
+
+if [ ! -f "$PROJECT_ROOT/.env" ]; then
+    echo "==> No .env found; copying .env.example (Agent mode will need credentials)"
+    cp "$PROJECT_ROOT/.env.example" "$PROJECT_ROOT/.env"
+fi
+
+if [ "$WITH_AGENT" = "yes" ]; then
+    if ! docker info >/dev/null 2>&1; then
+        echo "==> Docker is not running; start Docker Desktop first." >&2
+        exit 69
+    fi
+    if ! grep -qE '^DD_API_KEY=.+' "$PROJECT_ROOT/.env"; then
+        echo "==> DD_API_KEY is empty in .env; the agent will refuse to start." >&2
+        echo "    Get one from Organization Settings -> API Keys." >&2
+        exit 78
+    fi
+    echo "==> Starting the Datadog agent…"
+    docker compose up -d
+fi
+
+case "$TARGET" in
+    web) echo "==> Vite on http://localhost:5173"; exec "${NPM[@]}" run dev:web ;;
+    bff) echo "==> BFF on http://localhost:8787";  exec "${NPM[@]}" run dev:bff ;;
+    all)
+        echo "==> Vite on http://localhost:5173, BFF on http://localhost:8787"
+        exec "${NPM[@]}" run dev
+        ;;
+esac

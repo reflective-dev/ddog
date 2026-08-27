@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Format everything in place:
+#   - Rust:     cargo fmt
+#   - Markdown: pandoc, normalized to GitHub-flavored Markdown
+#   - Swift:    swift-format (once the SwiftUI app exists)
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$PROJECT_ROOT"
+
+TEMP_DIR="$PROJECT_ROOT/.local/tmp"
+mkdir -p "$TEMP_DIR"
+
+# echo "==> Formatting Rust…"
+# cargo fmt --all --manifest-path "$PROJECT_ROOT/rust/Cargo.toml"
+
+echo "==> Formatting Markdown…"
+# git ls-files skips anything .gitignore excludes (node_modules, build output, …)
+# while still covering new files that aren't committed yet.
+while IFS= read -r -d '' md; do
+    [ -f "$md" ] || continue # tracked but deleted in the working tree
+    tmp="$(mktemp "$TEMP_DIR/format.XXXXXX")"
+    pandoc --from=gfm --to=gfm --wrap=auto "$md" --output="$tmp"
+    mv "$tmp" "$md"
+    echo "    formatted $md"
+done < <(git ls-files -z --cached --others --exclude-standard -- '*.md')
+
+if [ -d "$PROJECT_ROOT/swift" ]; then
+    if command -v swift-format >/dev/null 2>&1; then
+        echo "==> Formatting Swift…"
+        swift-format format --in-place --recursive "$PROJECT_ROOT/swift"
+    else
+        echo "==> swift-format not found; skipping Swift (install with: brew install swift-format)"
+    fi
+fi
+
+echo "==> Done."
